@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         AI 對話批次刪除器 (ChatGPT + Google AI Mode)
 // @namespace    https://github.com/kelvin/ai-chat-batch-deleter
-// @version      0.1.0
-// @description  批次勾選並刪除 AI 對話紀錄，支援 ChatGPT 與 Google AI Mode（模擬 DOM 點擊）
+// @version      0.4.0
+// @description  批次勾選並刪除 AI 對話紀錄，支援 ChatGPT、Gemini 與 Google AI Mode
 // @author       kelvin
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
-// @match        https://www.google.com/search*
+// @match        https://gemini.google.com/*
+// @include      /^https:\/\/www\.google\.[a-z.]+\/(search|ai)/
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -102,7 +103,24 @@
 	const CONFIRM_WORDS = ["刪除", "删除", "Delete", "確定", "确定", "Confirm"];
 
 	// 每筆刪除之間的節流；調小較快，但太快可能觸發速率限制
-	const THROTTLE_MS = 400;
+	const THROTTLE_MS = 100;
+
+	function findConfirmButton() {
+		const dialogs = document.querySelectorAll(
+			'[role="dialog"], [role="alertdialog"]',
+		);
+		const dialog = dialogs[dialogs.length - 1];
+		if (!dialog || !isVisible(dialog)) {
+			return null;
+		}
+		const btns = [...dialog.querySelectorAll("button")].filter(
+			(b) => isVisible(b) && !b.hasAttribute("data-thread-id"),
+		);
+		return (
+			btns.find((b) => CONFIRM_WORDS.some((k) => text(b).includes(k))) ||
+			null
+		);
+	}
 
 	// 共用刪除收尾：點刪除項 →（可能）確認框 → 等待該筆消失
 	async function clickDeleteAndConfirm(panel, isGone) {
@@ -115,37 +133,29 @@
 		}
 		deleteItem.click();
 
-		// 確認框可能存在，也可能直接刪除
-		const dialog = await waitFor(
-			() =>
-				document.querySelector('[role="dialog"], [role="alertdialog"]'),
-			{ timeout: 1500 },
+		// 只等確認框按完、關掉就換下一筆；是否真的刪掉，最後再一起檢查
+		let confirmed = false;
+		const start = Date.now();
+		const settled = await waitFor(
+			() => {
+				if (isGone()) {
+					return true;
+				}
+				if (confirmed) {
+					return findConfirmButton() ? null : true;
+				}
+				const confirmBtn = findConfirmButton();
+				if (confirmBtn) {
+					confirmBtn.click();
+					confirmed = true;
+					return null;
+				}
+				return Date.now() - start > 800 ? true : null;
+			},
+			{ timeout: 4000, interval: 30 },
 		);
-		if (dialog) {
-			const confirmBtn = await waitFor(
-				() => {
-					const btns = [...dialog.querySelectorAll("button")].filter(
-						isVisible,
-					);
-					return (
-						btns.find((b) =>
-							CONFIRM_WORDS.some((k) => text(b).includes(k)),
-						) || null
-					);
-				},
-				{ timeout: 2000 },
-			);
-			if (confirmBtn) {
-				confirmBtn.click();
-			}
-		}
-
-		const removed = await waitFor(() => (isGone() ? true : null), {
-			timeout: 6000,
-			interval: 50,
-		});
-		if (!removed) {
-			throw new Error("刪除後該筆仍存在");
+		if (!settled) {
+			throw new Error("確認框沒有關閉");
 		}
 	}
 
@@ -157,35 +167,36 @@
 		id: "google",
 		label: "Google AI Mode",
 
+		// 只要在 AI 模式就顯示面板，記錄清單可以之後再打開
 		isActive() {
 			return Boolean(
-				document.querySelector('ul[data-xid="threads-list-root"]'),
+				new URLSearchParams(location.search).get("udm") === "50" ||
+					document.querySelector(
+						'[data-xid="aim-threads-view"], [data-thread-id]',
+					),
 			);
 		},
 
 		getListContainer() {
-			return document.querySelector('ul[data-xid="threads-list-root"]');
+			const node = document.querySelector("[data-thread-id]");
+			return node ? node.closest("ul") || node.parentElement : null;
 		},
 
+		// 不綁亂數 class，只認 data-thread-id；一列可能有多個節點帶同一個 id
 		getThreads() {
-			const rows = document.querySelectorAll(
-				'ul[data-xid="threads-list-root"] > li',
-			);
 			const out = [];
-			for (const li of rows) {
-				const btn = li.querySelector("button[data-thread-id]");
-				if (!btn) {
+			const seen = new Set();
+			for (const node of document.querySelectorAll("[data-thread-id]")) {
+				const id = node.getAttribute("data-thread-id");
+				if (!id || seen.has(id)) {
 					continue;
 				}
-				const id = btn.getAttribute("data-thread-id");
-				if (!id) {
+				const el = node.closest("li") || node;
+				if (!isVisible(el)) {
 					continue;
 				}
-				out.push({
-					id,
-					title: text(li.querySelector(".uQv1Ce")) || id,
-					el: li,
-				});
+				seen.add(id);
+				out.push({ id, title: text(el) || id, el });
 			}
 			return out;
 		},
@@ -195,26 +206,38 @@
 		},
 
 		threadFromNode(node) {
-			const li = node.closest && node.closest("li");
-			if (!li) {
-				return null;
+			return this.getThreads().find((t) => t.el.contains(node)) || null;
+		},
+
+		findOptionsButton(thread) {
+			const byId = document.querySelector(
+				`#actions-button-${CSS.escape(thread.id)} button`,
+			);
+			if (byId) {
+				return byId;
 			}
-			const btn = li.querySelector("button[data-thread-id]");
-			if (!btn) {
-				return null;
-			}
-			const id = btn.getAttribute("data-thread-id");
-			if (!id) {
-				return null;
-			}
-			return { id, title: text(li.querySelector(".uQv1Ce")) || id, el: li };
+			const words = ["選項", "更多", "動作", "option", "more", "action"];
+			const labelled = [
+				...thread.el.querySelectorAll('button, [role="button"]'),
+			].find((b) => {
+				if (b.hasAttribute("data-thread-id")) {
+					return false;
+				}
+				const label = (b.getAttribute("aria-label") || "").toLowerCase();
+				return words.some((w) => label.includes(w));
+			});
+			return labelled || thread.el.querySelector(".fMed7");
 		},
 
 		async deleteFlow(thread, panel) {
-			const optionsBtn =
-				document.querySelector(
-					`#actions-button-${CSS.escape(thread.id)} button`,
-				) || thread.el.querySelector(".fMed7");
+			// 選項按鈕可能要 hover 才出現
+			for (const type of ["mouseover", "mouseenter"]) {
+				thread.el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+			}
+			const optionsBtn = await waitFor(
+				() => this.findOptionsButton(thread),
+				{ timeout: 2000, interval: 50 },
+			);
 			if (!optionsBtn) {
 				throw new Error("找不到選項按鈕");
 			}
@@ -245,7 +268,7 @@
 			const out = [];
 			for (const a of document.querySelectorAll('nav a[href^="/c/"]')) {
 				const id = this._idFromHref(a.getAttribute("href"));
-				if (!id) {
+				if (!id || a.closest("[data-abd-deleted]")) {
 					continue;
 				}
 				out.push({
@@ -271,6 +294,69 @@
 				return null;
 			}
 			return { id, title: text(a) || id, el: a.closest("li") || a };
+		},
+
+		_token: null,
+
+		async _getToken() {
+			if (!this._token) {
+				const res = await fetch("/api/auth/session");
+				const { accessToken } = await res.json();
+				if (!accessToken) {
+					throw new Error("拿不到登入資訊");
+				}
+				this._token = accessToken;
+			}
+			return this._token;
+		},
+
+		// 直接呼叫 ChatGPT 自己的刪除 API（和選單刪除一樣是隱藏對話），不用點選單
+		async _deleteByApi(thread) {
+			const res = await fetch(
+				`/backend-api/conversation/${encodeURIComponent(thread.id)}`,
+				{
+					method: "PATCH",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${await this._getToken()}`,
+					},
+					body: JSON.stringify({ is_visible: false }),
+				},
+			);
+			if (res.status === 401) {
+				this._token = null;
+			}
+			if (!res.ok) {
+				throw new Error(`API ${res.status}`);
+			}
+			// 側邊欄不會自己更新；用隱藏取代移除，避免弄壞 React
+			thread.el.style.display = "none";
+			thread.el.setAttribute("data-abd-deleted", "");
+		},
+
+		// 一次平行送 6 筆，回傳成功的和第一個錯誤
+		async deleteBatch(ids) {
+			const deleted = [];
+			let error = null;
+			const queue = ids
+				.map((id) => this.findThreadById(id))
+				.filter(Boolean);
+			const worker = async () => {
+				for (let thread = queue.shift(); thread; thread = queue.shift()) {
+					if (state.aborted || error) {
+						return;
+					}
+					try {
+						await this._deleteByApi(thread);
+						deleted.push({ id: thread.id, title: thread.title });
+						setStatus(`用 API 刪除中 ${deleted.length}/${ids.length}…`);
+					} catch (err) {
+						error = error || err.message;
+					}
+				}
+			};
+			await Promise.all(Array.from({ length: 6 }, worker));
+			return { deleted, error };
 		},
 
 		async deleteFlow(thread, panel) {
@@ -306,10 +392,100 @@
 		},
 	};
 
+	const geminiAdapter = {
+		id: "gemini",
+		label: "Gemini",
+
+		isActive() {
+			return Boolean(this._items().length);
+		},
+
+		_items() {
+			return document.querySelectorAll(
+				'[data-test-id="conversation"], side-navigation a[href^="/app/"]',
+			);
+		},
+
+		_idOf(node) {
+			const href = node.getAttribute("href") || "";
+			const fromHref = href.match(/\/app\/([^/?#]+)/);
+			if (fromHref) {
+				return fromHref[1];
+			}
+			const fromLog = (node.getAttribute("jslog") || "").match(
+				/"c_([0-9a-z]+)"/i,
+			);
+			return fromLog ? fromLog[1] : null;
+		},
+
+		getListContainer() {
+			const [first] = this._items();
+			return first ? first.closest("infinite-scroller") : null;
+		},
+
+		// 選項按鈕和對話列是兄弟節點，所以用外層容器當整列
+		getThreads() {
+			const out = [];
+			const seen = new Set();
+			for (const node of this._items()) {
+				const id = this._idOf(node);
+				if (!id || seen.has(id)) {
+					continue;
+				}
+				const el =
+					node.closest(".conversation-items-container") ||
+					node.parentElement ||
+					node;
+				if (!isVisible(el)) {
+					continue;
+				}
+				seen.add(id);
+				out.push({ id, title: text(node) || id, el });
+			}
+			return out;
+		},
+
+		findThreadById(id) {
+			return this.getThreads().find((t) => t.id === id) || null;
+		},
+
+		threadFromNode(node) {
+			return this.getThreads().find((t) => t.el.contains(node)) || null;
+		},
+
+		async deleteFlow(thread, panel) {
+			for (const type of ["mouseover", "mouseenter"]) {
+				thread.el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+			}
+			const optionsBtn = await waitFor(
+				() =>
+					thread.el.querySelector(
+						'button[data-test-id="actions-menu-button"]',
+					) ||
+					[...thread.el.querySelectorAll("button")].find((b) => {
+						const label = (b.getAttribute("aria-label") || "").toLowerCase();
+						return ["選項", "更多", "option", "more"].some((w) =>
+							label.includes(w),
+						);
+					}) ||
+					null,
+				{ timeout: 2000, interval: 50 },
+			);
+			if (!optionsBtn) {
+				throw new Error("找不到選項按鈕");
+			}
+			optionsBtn.click();
+			await clickDeleteAndConfirm(panel, () => !this.findThreadById(thread.id));
+		},
+	};
+
 	function pickAdapter() {
 		const host = location.hostname;
 		if (host.includes("chatgpt.com") || host.includes("openai.com")) {
 			return chatgptAdapter;
+		}
+		if (host === "gemini.google.com") {
+			return geminiAdapter;
 		}
 		if (host.includes("google.")) {
 			return googleAdapter;
@@ -335,7 +511,8 @@
 	#abd-panel button.abd-primary{background:#ef4444;border-color:#ef4444;color:#fff;}
 	#abd-panel button.abd-primary:hover{background:#dc2626;}
 	#abd-panel button:disabled{opacity:.5;cursor:not-allowed;}
-	#abd-status{margin-top:8px;font-size:12px;color:#555;min-height:16px;}
+	#abd-status{margin-top:8px;font-size:12px;color:#555;min-height:16px;
+		white-space:pre-line;max-height:160px;overflow:auto;}
 	.abd-check{position:absolute !important;right:8px;left:auto;top:50%;
 		transform:translateY(-50%);z-index:2147483646;
 		width:18px;height:18px;margin:0;cursor:pointer;accent-color:#ef4444;}
@@ -382,6 +559,8 @@
 		els.del.textContent = `刪除選取 (${state.selected.size})`;
 		els.del.disabled = state.running || state.selected.size === 0;
 		els.toggle.disabled = state.running;
+		els.all.style.display = state.selectMode ? "block" : "none";
+		els.all.disabled = state.running;
 		els.abort.style.display = state.running ? "block" : "none";
 	}
 
@@ -458,29 +637,32 @@
 		setSel(thread, !state.selected.has(thread.id));
 	}
 
-	async function runDelete() {
-		const ids = [...state.selected];
-		if (ids.length === 0) {
-			return;
-		}
-		if (
-			!window.confirm(
-				`確定要刪除 ${ids.length} 筆對話嗎？此動作無法復原。`,
-			)
-		) {
-			return;
-		}
-		state.running = true;
-		state.aborted = false;
-		updateUI();
+	// 刪除最多跑幾輪；沒刪掉的會在下一輪重試
+	const MAX_ROUNDS = 3;
 
+	async function deleteRound(allIds, round) {
 		let done = 0;
 		const failed = [];
+		const requested = [];
+		let ids = allIds;
+		// 有 API 的網站先一次平行刪，剩下的才逐筆點選單
+		if (state.adapter.deleteBatch && !state.aborted) {
+			setStatus(`用 API 刪除 ${ids.length} 筆…`);
+			const { deleted, error } = await state.adapter.deleteBatch(ids);
+			requested.push(...deleted);
+			const deletedIds = new Set(deleted.map(({ id }) => id));
+			ids = ids.filter((id) => !deletedIds.has(id));
+			if (error && ids.length) {
+				setStatus(`API 失敗（${error}），改點選單…`);
+				await sleep(1500);
+			}
+		}
 		for (const id of ids) {
 			if (state.aborted) {
 				break;
 			}
-			setStatus(`刪除中 ${done + 1}/${ids.length}…`);
+			const label = round > 1 ? `第 ${round} 輪重試 ` : "刪除中 ";
+			setStatus(`${label}${done + 1}/${ids.length}…`);
 			let ok = false;
 			let title = id;
 			let lastErr = null;
@@ -502,7 +684,7 @@
 				}
 			}
 			if (ok) {
-				state.selected.delete(id);
+				requested.push({ id, title });
 			} else {
 				failed.push({ id, title, msg: lastErr ? lastErr.message : "未知" });
 			}
@@ -511,15 +693,66 @@
 			await sleep(THROTTLE_MS); // 節流，降低觸發防濫用機制
 		}
 
+		setStatus("確認是否都刪掉了…");
+		const stillThere = () =>
+			requested.filter(({ id }) => state.adapter.findThreadById(id));
+		await waitFor(() => (stillThere().length ? null : true), {
+			timeout: 15000,
+			interval: 200,
+		});
+		const left = new Set(stillThere().map(({ id }) => id));
+		for (const item of requested) {
+			if (left.has(item.id)) {
+				failed.push({ ...item, msg: "送出刪除後仍在清單" });
+			} else {
+				state.selected.delete(item.id);
+			}
+		}
+		return failed;
+	}
+
+	async function runDelete() {
+		const ids = [...state.selected];
+		if (ids.length === 0) {
+			return;
+		}
+		if (
+			!window.confirm(
+				`確定要刪除 ${ids.length} 筆對話嗎？此動作無法復原。`,
+			)
+		) {
+			return;
+		}
+		state.running = true;
+		state.aborted = false;
+		updateUI();
+
+		let failed = [];
+		let pending = ids;
+		for (let round = 1; round <= MAX_ROUNDS && pending.length; round++) {
+			if (state.aborted) {
+				break;
+			}
+			if (round > 1) {
+				pressEscape();
+				await sleep(500);
+			}
+			failed = await deleteRound(pending, round);
+			pending = failed.map(({ id }) => id);
+		}
+
 		state.running = false;
 		updateUI();
 		if (state.aborted) {
 			setStatus(`已中止，剩 ${state.selected.size} 筆未刪`);
 		} else if (failed.length) {
-			setStatus(`完成，${failed.length} 筆失敗（見 console）`);
-			console.warn("[AI批次刪除] 失敗清單：", failed);
+			// Google 頁面會吃掉 console 輸出，失敗原因直接顯示在面板上
+			const detail = failed
+				.map(({ title, msg }) => `${title.slice(0, 20)}：${msg}`)
+				.join("\n");
+			setStatus(`重試 ${MAX_ROUNDS} 輪後仍有 ${failed.length} 筆失敗\n${detail}`);
 		} else {
-			setStatus(`完成，已刪 ${done} 筆`);
+			setStatus(`完成，已刪 ${ids.length} 筆`);
 		}
 	}
 
@@ -527,22 +760,33 @@
 		if (document.getElementById("abd-panel")) {
 			return;
 		}
-		panel = document.createElement("div");
-		panel.id = "abd-panel";
-		panel.innerHTML = `
-			<h3><span>AI 批次刪除</span><span>${state.adapter.label}</span></h3>
-			<button id="abd-toggle"></button>
-			<button id="abd-del" class="abd-primary"></button>
-			<button id="abd-abort" style="display:none">中止</button>
-			<div id="abd-status"></div>`;
-		document.body.appendChild(panel);
-
-		els = {
-			toggle: panel.querySelector("#abd-toggle"),
-			del: panel.querySelector("#abd-del"),
-			abort: panel.querySelector("#abd-abort"),
-			status: panel.querySelector("#abd-status"),
+		// Gemini 有 Trusted Types，不能用 innerHTML，只能逐個建立節點
+		const make = (tag, props = {}, children = []) => {
+			const node = Object.assign(document.createElement(tag), props);
+			node.append(...children);
+			return node;
 		};
+		els = {
+			toggle: make("button"),
+			all: make("button", { textContent: "全選目前顯示的" }),
+			del: make("button", { className: "abd-primary" }),
+			abort: make("button", { textContent: "中止" }),
+			status: make("div", { id: "abd-status" }),
+		};
+		els.all.style.display = "none";
+		els.abort.style.display = "none";
+		panel = make("div", { id: "abd-panel" }, [
+			make("h3", {}, [
+				make("span", { textContent: "AI 批次刪除" }),
+				make("span", { textContent: state.adapter.label }),
+			]),
+			els.toggle,
+			els.all,
+			els.del,
+			els.abort,
+			els.status,
+		]);
+		document.body.appendChild(panel);
 
 		els.toggle.addEventListener("click", () => {
 			state.selectMode = !state.selectMode;
@@ -552,9 +796,17 @@
 			} else {
 				const n = state.adapter.getThreads().length;
 				renderChecks();
-				setStatus(`找到 ${n} 筆，勾選要刪的`);
+				setStatus(
+					n ? `找到 ${n} 筆，勾選要刪的` : "找不到對話，請先打開記錄清單",
+				);
 			}
 			updateUI();
+		});
+		els.all.addEventListener("click", () => {
+			renderChecks();
+			for (const thread of state.adapter.getThreads()) {
+				setSel(thread, true);
+			}
 		});
 		els.del.addEventListener("click", runDelete);
 		els.abort.addEventListener("click", () => {
