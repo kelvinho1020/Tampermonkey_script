@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI 對話批次刪除器 (ChatGPT + Google AI Mode)
 // @namespace    https://github.com/kelvin/ai-chat-batch-deleter
-// @version      0.4.1
+// @version      0.4.2
 // @description  批次勾選並刪除 AI 對話紀錄，支援 ChatGPT、Gemini 與 Google AI Mode
 // @author       kelvin
 // @match        https://chatgpt.com/*
@@ -398,26 +398,53 @@
 		id: "gemini",
 		label: "Gemini",
 
+		// 在 Gemini 就顯示面板，找不到對話時面板會顯示原因
 		isActive() {
-			return Boolean(this._items().length);
+			return true;
 		},
 
+		_selector:
+			'[data-test-id="conversation"], a[href^="/app/"]:not(#abd-panel *)',
+
 		_items() {
-			return document.querySelectorAll(
-				'[data-test-id="conversation"], side-navigation a[href^="/app/"]',
+			return [...document.querySelectorAll(this._selector)].filter(
+				(node) => !node.parentElement?.closest(this._selector),
 			);
 		},
 
 		_idOf(node) {
-			const href = node.getAttribute("href") || "";
-			const fromHref = href.match(/\/app\/([^/?#]+)/);
+			const link = node.matches('a[href*="/app/"]')
+				? node
+				: node.querySelector('a[href*="/app/"]');
+			const href = link ? link.getAttribute("href") : "";
+			const fromHref = href.match(/\/app\/([0-9a-z_-]+)/i);
 			if (fromHref) {
 				return fromHref[1];
 			}
-			const fromLog = (node.getAttribute("jslog") || "").match(
-				/"c_([0-9a-z]+)"/i,
-			);
+			const logs = [node, ...node.querySelectorAll("[jslog]")]
+				.map((n) => n.getAttribute("jslog") || "")
+				.join(" ");
+			const fromLog = logs.match(/c_([0-9a-f]{8,})/i);
 			return fromLog ? fromLog[1] : null;
+		},
+
+		// 往上找到只包含這一筆的最外層，選項按鈕通常是兄弟節點
+		_rowOf(node) {
+			let el = node;
+			for (let depth = 0; depth < 4; depth++) {
+				const parent = el.parentElement;
+				if (!parent || parent.querySelectorAll(this._selector).length > 1) {
+					break;
+				}
+				el = parent;
+			}
+			return el;
+		},
+
+		describeEmpty() {
+			const items = this._items();
+			const noId = items.filter((node) => !this._idOf(node)).length;
+			return `找不到對話：列表節點 ${items.length} 個，其中 ${noId} 個讀不到 id。請先打開左側記錄清單`;
 		},
 
 		getListContainer() {
@@ -425,7 +452,6 @@
 			return first ? first.closest("infinite-scroller") : null;
 		},
 
-		// 選項按鈕和對話列是兄弟節點，所以用外層容器當整列
 		getThreads() {
 			const out = [];
 			const seen = new Set();
@@ -434,10 +460,7 @@
 				if (!id || seen.has(id)) {
 					continue;
 				}
-				const el =
-					node.closest(".conversation-items-container") ||
-					node.parentElement ||
-					node;
+				const el = this._rowOf(node);
 				if (!isVisible(el)) {
 					continue;
 				}
@@ -798,9 +821,10 @@
 			} else {
 				const n = state.adapter.getThreads().length;
 				renderChecks();
-				setStatus(
-					n ? `找到 ${n} 筆，勾選要刪的` : "找不到對話，請先打開記錄清單",
-				);
+				const empty = state.adapter.describeEmpty
+					? state.adapter.describeEmpty()
+					: "找不到對話，請先打開記錄清單";
+				setStatus(n ? `找到 ${n} 筆，勾選要刪的` : empty);
 			}
 			updateUI();
 		});
