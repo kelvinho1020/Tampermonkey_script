@@ -8,6 +8,8 @@
 // @match        https://www.google.com.tw/*
 // @match        https://www.google.co.jp/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/google-search-language-switcher.user.js
+// @downloadURL  https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/google-search-language-switcher.user.js
 // ==/UserScript==
 
 (function () {

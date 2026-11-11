@@ -6,6 +6,8 @@
 // @author       You
 // @match        https://leetcode.com/**/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/disable-leetcode-ctrl-enter.user.js
+// @downloadURL  https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/disable-leetcode-ctrl-enter.user.js
 // ==/UserScript==
 
 (function () {

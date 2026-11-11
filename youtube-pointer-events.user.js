@@ -6,6 +6,8 @@
 // @author       You
 // @match        https://www.youtube.com/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/youtube-pointer-events.user.js
+// @downloadURL  https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/youtube-pointer-events.user.js
 // ==/UserScript==
 
 (function() {

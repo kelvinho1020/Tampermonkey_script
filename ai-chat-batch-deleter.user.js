@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI 對話批次刪除器 (ChatGPT + Google AI Mode)
 // @namespace    https://github.com/kelvin/ai-chat-batch-deleter
-// @version      0.4.0
+// @version      0.4.1
 // @description  批次勾選並刪除 AI 對話紀錄，支援 ChatGPT、Gemini 與 Google AI Mode
 // @author       kelvin
 // @match        https://chatgpt.com/*
@@ -10,6 +10,8 @@
 // @include      /^https:\/\/www\.google\.[a-z.]+\/(search|ai)/
 // @run-at       document-idle
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/ai-chat-batch-deleter.user.js
+// @downloadURL  https://raw.githubusercontent.com/kelvinho1020/Tampermonkey_script/main/ai-chat-batch-deleter.user.js
 // ==/UserScript==
 
 (function () {
